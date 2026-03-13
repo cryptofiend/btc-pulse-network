@@ -268,28 +268,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   }
 
   /* =========== DATA LOADING =========== */
-  async function loadData() {
-    let data = null;
-    // Try live API first, fall back to static JSON
-    try {
-      const apiResp = await fetch('/api/transactions', { signal: AbortSignal.timeout(120000) });
-      if (apiResp.ok) {
-        data = await apiResp.json();
-        if (Array.isArray(data) && data.length > 0) {
-          console.log(`Loaded ${data.length} live transactions from API`);
-        } else {
-          data = null;
-        }
-      }
-    } catch (e) {
-      console.warn('Live API unavailable, falling back to static data:', e.message);
-    }
-    // Fallback to static JSON
-    if (!data) {
-      const resp = await fetch('./transactions.json');
-      data = await resp.json();
-      console.log(`Loaded ${data.length} transactions from static file`);
-    }
+  function initWithData(data) {
     allTransactions = data;
     timeStart = allTransactions[0].timestamp;
     timeEnd = allTransactions[allTransactions.length - 1].timestamp;
@@ -302,6 +281,50 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
     createWireMeshes();
     initTimeline();
     updateDisplay();
+  }
+
+  function showLoadingStatus(msg) {
+    const el = document.getElementById('loading-status');
+    if (el) el.textContent = msg;
+  }
+
+  async function loadData() {
+    // Load static data first for instant display
+    showLoadingStatus('Loading transaction data\u2026');
+    const staticResp = await fetch('./transactions.json');
+    const staticData = await staticResp.json();
+    console.log(`Loaded ${staticData.length} transactions from static file`);
+    initWithData(staticData);
+    showLoadingStatus('');
+
+    // Then try to upgrade to live data in the background
+    try {
+      showLoadingStatus('Fetching live blockchain data\u2026');
+      const apiResp = await fetch('/api/transactions?blocks=30', { signal: AbortSignal.timeout(120000) });
+      if (apiResp.ok) {
+        const liveData = await apiResp.json();
+        if (Array.isArray(liveData) && liveData.length > 10) {
+          console.log(`Upgraded to ${liveData.length} live transactions from API`);
+          // Reset and reinitialize with live data
+          clearPulses();
+          activatedEdges.clear();
+          recentEdges.clear();
+          edgeState.clear();
+          // Clear existing meshes
+          for (const [, mesh] of nodeMeshMap) { nodeGroup.remove(mesh); mesh.geometry?.dispose(); mesh.material?.dispose(); }
+          nodeMeshMap.clear();
+          for (const [, line] of wireMeshMap) { wireGroup.remove(line); line.geometry?.dispose(); line.material?.dispose(); }
+          wireMeshMap.clear();
+          nodes.clear();
+          edges = [];
+          initWithData(liveData);
+          showLoadingStatus('');
+        }
+      }
+    } catch (e) {
+      console.warn('Live API unavailable, keeping static data:', e.message);
+    }
+    showLoadingStatus('');
   }
 
   /* =========== FILTERING =========== */
@@ -768,307 +791,294 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
         // Text
         labelCtx.fillStyle = isLarge ? '#ff6b35' : '#00d4ff';
         labelCtx.fillText(labelText, 128, 24);
-
         const labelTex = new THREE.CanvasTexture(labelCanvas);
-        labelTex.minFilter = THREE.LinearFilter;
         const labelMat = new THREE.SpriteMaterial({
           map: labelTex,
           transparent: true,
-          opacity: 0.95,
+          opacity: 0,
           depthWrite: false,
+          blending: THREE.NormalBlending,
         });
         const labelSprite = new THREE.Sprite(labelMat);
         labelSprite.scale.set(4, 0.75, 1);
-        labelSprite.position.set(sNode.x, sNode.y + pulseSize * 4 + 0.5, sNode.z);
-        pulseGroup.add(labelSprite);
+        labelSprite.position.set(sNode.x, sNode.y + 1.2, sNode.z);
+        labelGroup.add(labelSprite);
 
         activePulses.push({
+          sprite, labelSprite, labelTex,
           sx: sNode.x, sy: sNode.y, sz: sNode.z,
-          dx: rNode.x, dy: rNode.y, dz: rNode.z,
-          startTime: performance.now(),
-          duration: travelMs,
-          size: pulseSize,
-          amount: tx.amount_btc,
-          isLarge,
-          sender: tx.sender,
-          receiver: tx.receiver,
-          confirmMin: tx.confirmation_time_min,
-          senderBalance: tx.sender_balance,
-          edgeKey: eKey,
-          progress: 0,
+          tx: rNode.x, ty: rNode.y, tz: rNode.z,
+          startMs: performance.now(),
+          durationMs: travelMs,
+          color, pulseSize, isLarge,
           alive: true,
-          sprite,
-          labelSprite,
-          impactTime: 0,
-          impactMesh: null,
+          edgeKey: eKey,
+          txData: tx,
         });
       }
     }
   }
 
-  function updatePulses(now) {
+  function updatePulses() {
+    const now = performance.now();
     for (const pulse of activePulses) {
-      if (!pulse.alive && pulse.impactMesh) {
-        // Impact flash animation
-        const age = now - pulse.impactTime;
-        if (age > 600) {
-          // Remove impact
-          pulseGroup.remove(pulse.impactMesh);
-          pulse.impactMesh.material.dispose();
-          pulse.impactMesh = null;
-          continue;
-        }
-        const t = age / 600;
-        pulse.impactMesh.scale.setScalar(pulse.size * 3 + t * 5);
-        pulse.impactMesh.material.opacity = (1 - t) * 0.6;
-        continue;
-      }
-
       if (!pulse.alive) continue;
+      const t = Math.min(1, (now - pulse.startMs) / pulse.durationMs);
+      const easedT = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;  // ease in-out
 
-      const elapsed = now - pulse.startTime;
-      const progress = Math.min(elapsed / pulse.duration, 1);
-      pulse.progress = progress;
+      // Interpolate position
+      pulse.sprite.position.set(
+        pulse.sx + (pulse.tx - pulse.sx) * easedT,
+        pulse.sy + (pulse.ty - pulse.sy) * easedT,
+        pulse.sz + (pulse.tz - pulse.sz) * easedT,
+      );
 
-      if (progress >= 1) {
+      // Label follows slightly behind pulse head
+      const labelT = Math.max(0, easedT - 0.05);
+      pulse.labelSprite.position.set(
+        pulse.sx + (pulse.tx - pulse.sx) * labelT,
+        pulse.sy + (pulse.ty - pulse.sy) * labelT + 1.2,
+        pulse.sz + (pulse.tz - pulse.sz) * labelT,
+      );
+
+      // Fade in quickly, hold, then fade out near destination
+      let opacity;
+      if (t < 0.12) opacity = t / 0.12;
+      else if (t < 0.8) opacity = 1;
+      else opacity = (1 - t) / 0.2;
+      pulse.sprite.material.opacity = Math.max(0, opacity) * 0.95;
+
+      // Label: fade in at 20%, hold, fade out at 80%
+      let labelOp;
+      if (t < 0.2) labelOp = 0;
+      else if (t < 0.3) labelOp = (t - 0.2) / 0.1;
+      else if (t < 0.75) labelOp = 0.9;
+      else labelOp = Math.max(0, (1 - t) / 0.25 * 0.9);
+      pulse.labelSprite.material.opacity = labelOp;
+
+      // Pulse size oscillation (breathing)
+      const breathe = 1 + 0.15 * Math.sin(t * Math.PI * 6);
+      pulse.sprite.scale.setScalar(pulse.pulseSize * 2 * breathe);
+
+      if (t >= 1) {
         pulse.alive = false;
-        pulse.impactTime = now;
-
-        // Remove pulse sprite and label
+        // Node flash on arrival
+        const arrivalMesh = nodeMeshMap.get(pulse.txData.receiver);
+        if (arrivalMesh) {
+          arrivalMesh.material.emissiveIntensity = 3.0;
+          setTimeout(() => {
+            if (arrivalMesh.material) arrivalMesh.material.emissiveIntensity = 0.8;
+          }, 400);
+        }
+        // Cleanup
         pulseGroup.remove(pulse.sprite);
-        pulseGroup.remove(pulse.labelSprite);
+        pulse.sprite.geometry?.dispose();
+        pulse.sprite.material.map?.dispose();
         pulse.sprite.material.dispose();
-        pulse.labelSprite.material.map.dispose();
+        labelGroup.remove(pulse.labelSprite);
+        pulse.labelSprite.geometry?.dispose();
+        pulse.labelTex?.dispose();
         pulse.labelSprite.material.dispose();
-
-        // Create impact flash
-        const impactMat = new THREE.SpriteMaterial({
-          map: glowTexture,
-          color: pulse.isLarge ? ORANGE.clone() : CYAN.clone(),
-          transparent: true,
-          opacity: 0.6,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-        });
-        const impactSprite = new THREE.Sprite(impactMat);
-        impactSprite.position.set(pulse.dx, pulse.dy, pulse.dz);
-        impactSprite.scale.setScalar(pulse.size * 3);
-        pulseGroup.add(impactSprite);
-        pulse.impactMesh = impactSprite;
-        continue;
       }
-
-      // Move pulse along wire
-      const px = pulse.sx + (pulse.dx - pulse.sx) * progress;
-      const py = pulse.sy + (pulse.dy - pulse.sy) * progress;
-      const pz = pulse.sz + (pulse.dz - pulse.sz) * progress;
-      pulse.sprite.position.set(px, py, pz);
-
-      // Fade as it travels
-      const alpha = 0.95 * (1 - progress * 0.4);
-      pulse.sprite.material.opacity = alpha;
-
-      // Scale pulsing
-      const pulseScale = pulse.size * 2 * (1 + 0.2 * Math.sin(progress * Math.PI * 4));
-      pulse.sprite.scale.setScalar(pulseScale);
-
-      // Label follows above
-      pulse.labelSprite.position.set(px, py + pulse.size * 4 + 0.5, pz);
-      pulse.labelSprite.material.opacity = alpha;
     }
-
-    // Clean up dead pulses
-    if (activePulses.length > 300) {
-      activePulses = activePulses.filter(p => p.alive || p.impactMesh);
-    }
+    activePulses = activePulses.filter(p => p.alive);
   }
 
-  /* =========== RAYCASTING / TOOLTIP =========== */
-  function onMouseMove(e) {
+  function clearPulses() {
+    for (const pulse of activePulses) {
+      pulseGroup.remove(pulse.sprite);
+      pulse.sprite.geometry?.dispose();
+      pulse.sprite.material.map?.dispose();
+      pulse.sprite.material.dispose();
+      labelGroup.remove(pulse.labelSprite);
+      pulse.labelSprite.geometry?.dispose();
+      pulse.labelTex?.dispose();
+      pulse.labelSprite.material.dispose();
+    }
+    activePulses = [];
+  }
+
+  /* =========== SIMULATION LOOP =========== */
+  function animate(timestamp) {
+    requestAnimationFrame(animate);
+
+    if (isPlaying) {
+      const wallDelta = lastFrameTime ? (timestamp - lastFrameTime) : 0;
+      lastFrameTime = timestamp;
+
+      const prevTime = simulationTime;
+      const simDelta = (wallDelta / SIM_HOUR_DURATION) * 3600 * playbackSpeed;
+      simulationTime = Math.min(simulationTime + simDelta, timeEnd);
+
+      if (simulationTime > prevTime) {
+        spawnPulses(prevTime);
+      }
+
+      if (simulationTime >= timeEnd) {
+        isPlaying = false;
+        lastFrameTime = 0;
+        elIconPlay.classList.remove('hidden');
+        elIconPause.classList.add('hidden');
+      }
+    } else {
+      lastFrameTime = 0;
+    }
+
+    updatePulses();
+    updateWires();
+    updateNodes();
+    updateDisplay();
+    controls.update();
+    composer.render();
+  }
+
+  /* =========== HOVER (raycasting) =========== */
+  function onMouseMove(event) {
     const rect = container.getBoundingClientRect();
-    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
     raycaster.setFromCamera(mouse, camera);
+    const meshes = Array.from(nodeMeshMap.values());
+    const intersects = raycaster.intersectObjects(meshes);
 
-    // Check nodes
-    const nodeIntersects = raycaster.intersectObjects(nodeGroup.children, false);
-    if (nodeIntersects.length > 0) {
-      const hit = nodeIntersects[0].object;
-      const addr = hit.userData.addr;
-      const shortAddr = addr.length > 16 ? addr.slice(0, 8) + '...' + addr.slice(-6) : addr;
-      const liveStats = getWalletStatsAtTime(addr, simulationTime);
+    if (intersects.length > 0) {
+      const hit = intersects[0].object;
+      const { addr, node } = hit.userData;
+      const stats = getWalletStatsAtTime(addr, simulationTime);
+
+      const shortAddr = addr.length > 20 ? addr.slice(0, 10) + '\u2026' + addr.slice(-8) : addr;
       elTooltip.innerHTML = `
-        <div><span class="tt-label">Wallet:</span> ${shortAddr}</div>
-        <div><span class="tt-label">Balance:</span> <span class="tt-amount">${liveStats.balance.toLocaleString(undefined, {maximumFractionDigits: 2})} BTC</span></div>
-        <div><span class="tt-label">Transactions:</span> ${liveStats.txCount}</div>
+        <div class="tt-label">Wallet</div>
+        <div class="tt-amount">${shortAddr}</div>
+        <div class="tt-label">Balance</div>
+        <div class="tt-amount">${stats.balance.toLocaleString(undefined, { maximumFractionDigits: 4 })} BTC</div>
+        <div class="tt-label">Transactions</div>
+        <div class="tt-amount">${stats.txCount}</div>
       `;
-      showTooltip(e.clientX, e.clientY);
-      return;
+      const rect2 = container.getBoundingClientRect();
+      elTooltip.style.left = (event.clientX - rect2.left + 12) + 'px';
+      elTooltip.style.top = (event.clientY - rect2.top - 10) + 'px';
+      elTooltip.classList.remove('hidden');
+      container.style.cursor = 'pointer';
+    } else {
+      elTooltip.classList.add('hidden');
+      container.style.cursor = '';
     }
-
-    // Check pulses
-    const pulseIntersects = raycaster.intersectObjects(
-      activePulses.filter(p => p.alive).map(p => p.sprite),
-      false
-    );
-    if (pulseIntersects.length > 0) {
-      const hitSprite = pulseIntersects[0].object;
-      const pulse = activePulses.find(p => p.sprite === hitSprite);
-      if (pulse) {
-        const ss = pulse.sender.length > 16 ? pulse.sender.slice(0, 8) + '...' : pulse.sender;
-        const sr = pulse.receiver.length > 16 ? pulse.receiver.slice(0, 8) + '...' : pulse.receiver;
-        elTooltip.innerHTML = `
-          <div><span class="tt-label">Amount:</span> <span class="tt-amount">${pulse.amount.toLocaleString()} BTC</span></div>
-          <div><span class="tt-label">From:</span> ${ss}</div>
-          <div><span class="tt-label">To:</span> ${sr}</div>
-          <div><span class="tt-label">Confirm:</span> ${pulse.confirmMin.toFixed(0)} min</div>
-          <div><span class="tt-label">Sender Bal:</span> ${pulse.senderBalance.toLocaleString()} BTC</div>
-        `;
-        showTooltip(e.clientX, e.clientY);
-        return;
-      }
-    }
-
-    elTooltip.classList.add('hidden');
-  }
-
-  function showTooltip(cx, cy) {
-    elTooltip.classList.remove('hidden');
-    const mainRect = document.getElementById('main').getBoundingClientRect();
-    const ttRect = elTooltip.getBoundingClientRect();
-    let tx = cx - mainRect.left + 14;
-    let ty = cy - mainRect.top - 10;
-    if (tx + ttRect.width > mainRect.width - 10) tx = cx - mainRect.left - ttRect.width - 14;
-    if (ty + ttRect.height > mainRect.height - 10) ty = cy - mainRect.top - ttRect.height - 10;
-    if (ty < 4) ty = 4;
-    elTooltip.style.left = tx + 'px';
-    elTooltip.style.top = ty + 'px';
   }
 
   /* =========== CONTROLS =========== */
-  function togglePlay(forceState) {
-    isPlaying = forceState !== undefined ? forceState : !isPlaying;
-    elIconPlay.classList.toggle('hidden', isPlaying);
-    elIconPause.classList.toggle('hidden', !isPlaying);
+  elBtnPlay.addEventListener('click', () => {
+    if (simulationTime >= timeEnd) {
+      simulationTime = timeStart;
+      clearPulses();
+      activatedEdges.clear();
+      recentEdges.clear();
+      edgeState.clear();
+      updateWires();
+    }
+    isPlaying = !isPlaying;
     lastFrameTime = 0;
-  }
+    if (isPlaying) {
+      elIconPlay.classList.add('hidden');
+      elIconPause.classList.remove('hidden');
+    } else {
+      elIconPlay.classList.remove('hidden');
+      elIconPause.classList.add('hidden');
+    }
+  });
 
-  function rewind() {
+  elBtnRewind.addEventListener('click', () => {
     simulationTime = timeStart;
     clearPulses();
     activatedEdges.clear();
     recentEdges.clear();
     edgeState.clear();
+    updateWires();
     updateDisplay();
-  }
+    isPlaying = false;
+    lastFrameTime = 0;
+    elIconPlay.classList.remove('hidden');
+    elIconPause.classList.add('hidden');
+  });
 
-  function skipForward() {
-    simulationTime = Math.min(simulationTime + 3600, timeEnd);
+  elBtnForward.addEventListener('click', () => {
+    const jump = (timeEnd - timeStart) * 0.1;
+    const prevTime = simulationTime;
+    simulationTime = Math.min(simulationTime + jump, timeEnd);
+    spawnPulses(prevTime);
     updateDisplay();
-  }
+  });
 
-  function clearPulses() {
-    for (const p of activePulses) {
-      if (p.sprite && p.sprite.parent) pulseGroup.remove(p.sprite);
-      if (p.labelSprite && p.labelSprite.parent) pulseGroup.remove(p.labelSprite);
-      if (p.impactMesh && p.impactMesh.parent) pulseGroup.remove(p.impactMesh);
-    }
-    activePulses = [];
-  }
+  elSpeedSelect.addEventListener('change', () => {
+    playbackSpeed = parseFloat(elSpeedSelect.value);
+  });
 
-  function onFilterChange() {
-    filterMinBtc = Math.max(1, parseInt(elFilterMinBtc.value) || 1);
-    filterMinWallet = Math.max(0, parseInt(elFilterMinWallet.value) || 0);
-    applyFilters();
-    buildGraph();
-    buildWalletTimeline();
-    layoutNodes3D();
-    createNodeMeshes();
-    createWireMeshes();
+  elTimeline.addEventListener('input', () => {
+    const prevTime = simulationTime;
+    simulationTime = timeStart + (elTimeline.value / 1000) * (timeEnd - timeStart);
+    if (simulationTime > prevTime) spawnPulses(prevTime);
+    else { clearPulses(); edgeState.clear(); }
+    updateDisplay();
+  });
+
+  elFilterMinBtc.addEventListener('change', () => {
+    filterMinBtc = parseFloat(elFilterMinBtc.value) || 1;
+    rebuildVisualization();
+  });
+
+  elFilterMinWallet.addEventListener('change', () => {
+    filterMinWallet = parseFloat(elFilterMinWallet.value) || 0;
+    rebuildVisualization();
+  });
+
+  function rebuildVisualization() {
     clearPulses();
     activatedEdges.clear();
     recentEdges.clear();
     edgeState.clear();
+    const savedTime = simulationTime;
+    applyFilters();
+    buildGraph();
+    buildWalletTimeline();
+    layoutNodes3D();
+    // Clear and rebuild meshes
+    for (const [, mesh] of nodeMeshMap) { nodeGroup.remove(mesh); mesh.geometry?.dispose(); mesh.material?.dispose(); }
+    nodeMeshMap.clear();
+    for (const [, line] of wireMeshMap) { wireGroup.remove(line); line.geometry?.dispose(); line.material?.dispose(); }
+    wireMeshMap.clear();
+    createNodeMeshes();
+    createWireMeshes();
+    simulationTime = savedTime;
+    initTimeline();
     updateDisplay();
   }
 
-  /* =========== ANIMATION LOOP =========== */
-  function animate(now) {
-    requestAnimationFrame(animate);
-
-    if (!lastFrameTime) lastFrameTime = now;
-    const dt = now - lastFrameTime;
-    lastFrameTime = now;
-
-    if (isPlaying) {
-      const prevTime = simulationTime;
-      const simDelta = (dt / SIM_HOUR_DURATION) * 3600 * playbackSpeed;
-      simulationTime = Math.min(simulationTime + simDelta, timeEnd);
-      spawnPulses(prevTime);
-      updateDisplay();
-      if (simulationTime >= timeEnd) togglePlay(false);
+  // Sound toggle
+  elBtnSound.addEventListener('click', () => {
+    audioEnabled = !audioEnabled;
+    if (audioEnabled) {
+      elIconSoundOn.classList.remove('hidden');
+      elIconSoundOff.classList.add('hidden');
+    } else {
+      elIconSoundOn.classList.add('hidden');
+      elIconSoundOff.classList.remove('hidden');
     }
-
-    updateNodes();
-    updateWires();
-    updatePulses(now);
-    controls.update();
-    composer.render();
-  }
+  });
 
   /* =========== RESIZE =========== */
-  function onResize() {
+  window.addEventListener('resize', () => {
     const w = container.clientWidth, h = container.clientHeight;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
     composer.setSize(w, h);
-    // Update LineMaterial resolutions
     const res = new THREE.Vector2(w, h);
     for (const [, line] of wireMeshMap) {
-      line.material.resolution.copy(res);
+      line.material.resolution.set(w, h);
     }
-  }
+  });
 
-  /* =========== EVENT LISTENERS =========== */
-  elBtnPlay.addEventListener('click', () => togglePlay());
-  elBtnRewind.addEventListener('click', rewind);
-  elBtnForward.addEventListener('click', skipForward);
-  elSpeedSelect.addEventListener('change', () => { playbackSpeed = parseFloat(elSpeedSelect.value); });
-  elTimeline.addEventListener('input', () => {
-    const progress = parseInt(elTimeline.value) / 1000;
-    const newTime = timeStart + progress * (timeEnd - timeStart);
-    // If scrubbing backward, reset edge state (accumulated counts would be wrong)
-    if (newTime < simulationTime) {
-      edgeState.clear();
-      activatedEdges.clear();
-      recentEdges.clear();
-    }
-    simulationTime = newTime;
-    clearPulses();
-    updateDisplay();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
-    if (e.code === 'ArrowLeft') {
-      simulationTime = Math.max(simulationTime - 3600, timeStart);
-      edgeState.clear(); activatedEdges.clear(); recentEdges.clear();
-      clearPulses(); updateDisplay();
-    }
-    if (e.code === 'ArrowRight') { skipForward(); }
-  });
-  elBtnSound.addEventListener('click', () => {
-    audioEnabled = !audioEnabled;
-    elIconSoundOn.classList.toggle('hidden', !audioEnabled);
-    elIconSoundOff.classList.toggle('hidden', audioEnabled);
-  });
-  // Initialize AudioContext on first play click (browser autoplay policy)
-  elBtnPlay.addEventListener('click', () => { if (audioEnabled) ensureAudioCtx(); }, { once: true });
-  elFilterMinBtc.addEventListener('change', onFilterChange);
-  elFilterMinWallet.addEventListener('change', onFilterChange);
-  window.addEventListener('resize', onResize);
   container.addEventListener('mousemove', onMouseMove);
   container.addEventListener('mouseleave', () => elTooltip.classList.add('hidden'));
 
