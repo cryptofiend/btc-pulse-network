@@ -194,6 +194,11 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   const elBtnSound = document.getElementById('btn-sound');
   const elIconSoundOn = document.getElementById('icon-sound-on');
   const elIconSoundOff = document.getElementById('icon-sound-off');
+  const elRangeStart = document.getElementById('range-start');
+  const elRangeEnd = document.getElementById('range-end');
+  const elBtnLoadRange = document.getElementById('btn-load-range');
+  const elRangeStatus = document.getElementById('range-status');
+  const elBtnRefresh = document.getElementById('btn-refresh-data');
 
   /* =========== THREE.JS SETUP =========== */
   function initThree() {
@@ -268,6 +273,10 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   }
 
   /* =========== DATA LOADING =========== */
+  // Available data bounds from the database
+  let dbEarliest = 0, dbLatest = 0, dbTotalTxns = 0;
+  let useDatabase = false;
+
   function initWithData(data) {
     allTransactions = data;
     timeStart = allTransactions[0].timestamp;
@@ -283,48 +292,116 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
     updateDisplay();
   }
 
+  function resetScene() {
+    clearPulses();
+    activatedEdges.clear();
+    recentEdges.clear();
+    edgeState.clear();
+    isPlaying = false;
+    elIconPlay.classList.remove('hidden');
+    elIconPause.classList.add('hidden');
+    for (const [, mesh] of nodeMeshMap) { nodeGroup.remove(mesh); mesh.geometry?.dispose(); mesh.material?.dispose(); }
+    nodeMeshMap.clear();
+    for (const [, line] of wireMeshMap) { wireGroup.remove(line); line.geometry?.dispose(); line.material?.dispose(); }
+    wireMeshMap.clear();
+    nodes.clear();
+    edges = [];
+  }
+
   function showLoadingStatus(msg) {
     const el = document.getElementById('loading-status');
     if (el) el.textContent = msg;
   }
 
-  async function loadData() {
-    // Load static data first for instant display
-    showLoadingStatus('Loading transaction data\u2026');
-    const staticResp = await fetch('./transactions.json');
-    const staticData = await staticResp.json();
-    console.log(`Loaded ${staticData.length} transactions from static file`);
-    initWithData(staticData);
-    showLoadingStatus('');
+  function setRangeStatus(msg) {
+    if (elRangeStatus) elRangeStatus.textContent = msg;
+  }
 
-    // Then try to upgrade to live data in the background
+  function unixToLocalDatetime(ts) {
+    const d = new Date(ts * 1000);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function datetimeToUnix(dtStr) {
+    return Math.floor(new Date(dtStr).getTime() / 1000);
+  }
+
+  async function loadFromDatabase(startTs, endTs) {
+    showLoadingStatus('Loading transactions from database\u2026');
+    setRangeStatus('Loading\u2026');
+    elBtnLoadRange.disabled = true;
     try {
-      showLoadingStatus('Fetching live blockchain data\u2026');
-      const apiResp = await fetch('/api/transactions?blocks=30', { signal: AbortSignal.timeout(120000) });
-      if (apiResp.ok) {
-        const liveData = await apiResp.json();
-        if (Array.isArray(liveData) && liveData.length > 10) {
-          console.log(`Upgraded to ${liveData.length} live transactions from API`);
-          // Reset and reinitialize with live data
-          clearPulses();
-          activatedEdges.clear();
-          recentEdges.clear();
-          edgeState.clear();
-          // Clear existing meshes
-          for (const [, mesh] of nodeMeshMap) { nodeGroup.remove(mesh); mesh.geometry?.dispose(); mesh.material?.dispose(); }
-          nodeMeshMap.clear();
-          for (const [, line] of wireMeshMap) { wireGroup.remove(line); line.geometry?.dispose(); line.material?.dispose(); }
-          wireMeshMap.clear();
-          nodes.clear();
-          edges = [];
-          initWithData(liveData);
-          showLoadingStatus('');
+      const url = `/api/transactions?start=${startTs}&end=${endTs}&min_btc=1`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!resp.ok) throw new Error(`API returned ${resp.status}`);
+      const data = await resp.json();
+      if (!Array.isArray(data) || data.length === 0) {
+        showLoadingStatus('No transactions found in this range');
+        setRangeStatus('No data');
+        elBtnLoadRange.disabled = false;
+        return;
+      }
+      console.log(`Loaded ${data.length} transactions from database`);
+      resetScene();
+      initWithData(data);
+      showLoadingStatus('');
+      setRangeStatus(`${data.length} transactions loaded`);
+    } catch (e) {
+      console.error('Database load failed:', e);
+      showLoadingStatus('Failed to load data');
+      setRangeStatus('Error');
+    }
+    elBtnLoadRange.disabled = false;
+  }
+
+  async function loadData() {
+    // Try to connect to the database first
+    try {
+      const rangeResp = await fetch('/api/range', { signal: AbortSignal.timeout(10000) });
+      if (rangeResp.ok) {
+        const range = await rangeResp.json();
+        if (range.earliest && range.latest && range.totalTransactions > 0) {
+          useDatabase = true;
+          dbEarliest = range.earliest;
+          dbLatest = range.latest;
+          dbTotalTxns = range.totalTransactions;
+
+          // Set date picker bounds
+          elRangeStart.min = unixToLocalDatetime(dbEarliest);
+          elRangeStart.max = unixToLocalDatetime(dbLatest);
+          elRangeEnd.min = unixToLocalDatetime(dbEarliest);
+          elRangeEnd.max = unixToLocalDatetime(dbLatest);
+
+          // Default: last 24 hours of data
+          const defaultStart = Math.max(dbEarliest, dbLatest - 86400);
+          elRangeStart.value = unixToLocalDatetime(defaultStart);
+          elRangeEnd.value = unixToLocalDatetime(dbLatest);
+
+          setRangeStatus(`${dbTotalTxns.toLocaleString()} total transactions available`);
+
+          // Load default range
+          await loadFromDatabase(defaultStart, dbLatest);
+          return;
         }
       }
     } catch (e) {
-      console.warn('Live API unavailable, keeping static data:', e.message);
+      console.warn('Database not available:', e.message);
     }
+
+    // Fallback: load static JSON
+    useDatabase = false;
+    showLoadingStatus('Loading transaction data\u2026');
+    const staticResp = await fetch('./transactions.json');
+    const staticData = await staticResp.json();
+    console.log(`Loaded ${staticData.length} transactions from static file (database unavailable)`);
+    initWithData(staticData);
     showLoadingStatus('');
+
+    // Set date picker to static data range
+    elRangeStart.value = unixToLocalDatetime(timeStart);
+    elRangeEnd.value = unixToLocalDatetime(timeEnd);
+    setRangeStatus('Using cached data (database unavailable)');
   }
 
   /* =========== FILTERING =========== */
@@ -721,218 +798,83 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
     canvas.height = size;
     const ctx = canvas.getContext('2d');
     const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
-    gradient.addColorStop(0, 'rgba(255,255,255,1)');
-    gradient.addColorStop(0.3, 'rgba(255,255,255,0.8)');
-    gradient.addColorStop(0.6, 'rgba(255,255,255,0.3)');
-    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.8)');
+    gradient.addColorStop(0.7, 'rgba(255, 255, 255, 0.2)');
+    gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, size, size);
-    const tex = new THREE.CanvasTexture(canvas);
-    return tex;
+    return new THREE.CanvasTexture(canvas);
   }
+
   const glowTexture = createGlowTexture();
 
-  function spawnPulses(prevTime) {
-    for (const tx of filteredTxns) {
-      if (tx.timestamp > prevTime && tx.timestamp <= simulationTime) {
-        const sNode = nodes.get(tx.sender);
-        const rNode = nodes.get(tx.receiver);
-        if (!sNode || !rNode) continue;
+  function spawnPulse(tx, edge) {
+    const isLarge = tx.amount_btc >= 100;
+    const color = isLarge ? ORANGE : CYAN;
+    const btcLog = Math.log10(Math.max(tx.amount_btc, 1));
+    const pulseSize = 0.3 + (btcLog / 4) * 1.2;  // 0.3 - 1.5
 
-        const confNorm = Math.max(0.1, Math.min(1, tx.confirmation_time_min / 120));
-        const travelMs = PULSE_DURATION_BASE * (0.5 + confNorm * 1.5);
-        const amountLog = Math.log10(Math.max(tx.amount_btc, 1));
-        const pulseSize = 0.15 + amountLog * 0.25;
-        const isLarge = tx.amount_btc >= 100;
-        const color = isLarge ? ORANGE : CYAN;
+    const mat = new THREE.SpriteMaterial({
+      map: glowTexture,
+      color: color,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.setScalar(pulseSize);
+    sprite.position.set(edge.sx, edge.sy, edge.sz);
+    pulseGroup.add(sprite);
 
-        const eKey = tx.sender < tx.receiver ? `${tx.sender}-${tx.receiver}` : `${tx.receiver}-${tx.sender}`;
-        activatedEdges.add(eKey);
-        recentEdges.set(eKey, simulationTime);
+    // Confirmation time normalization: 10 min (fast) to 180 min (slow)
+    const confNorm = Math.max(0.1, Math.min(1, tx.confirmation_time_min / 180));
 
-        // Update persistent edge state
-        if (!edgeState.has(eKey)) {
-          edgeState.set(eKey, { txCount: 0, lastTxTime: 0 });
-        }
-        const es = edgeState.get(eKey);
-        es.txCount++;
-        es.lastTxTime = simulationTime;
+    // Speed is inverse of confNorm: faster confirmation = faster pulse
+    const speedMultiplier = 1.5 - confNorm;  // 0.5-1.5
+    const durationMs = PULSE_DURATION_BASE / (speedMultiplier * playbackSpeed);
 
-        // Play laser sound
-        playLaserSound(tx.amount_btc, confNorm);
+    const pulse = {
+      sprite,
+      sx: edge.sx, sy: edge.sy, sz: edge.sz,
+      tx: edge.tx, ty: edge.ty, tz: edge.tz,
+      startTime: performance.now(),
+      duration: durationMs,
+      alive: true,
+      edgeKey: edge.key,
+      tx_data: tx,
+      confNorm,
+    };
+    activePulses.push(pulse);
 
-        // Create sprite for pulse head
-        const mat = new THREE.SpriteMaterial({
-          map: glowTexture,
-          color: color.clone(),
-          transparent: true,
-          opacity: 0.95,
-          depthWrite: false,
-          blending: THREE.AdditiveBlending,
-        });
-        const sprite = new THREE.Sprite(mat);
-        sprite.scale.setScalar(pulseSize * 2);
-        sprite.position.set(sNode.x, sNode.y, sNode.z);
-        pulseGroup.add(sprite);
+    // Play sound on spawn
+    playLaserSound(tx.amount_btc, confNorm);
 
-        // Create label sprite
-        const labelCanvas = document.createElement('canvas');
-        const labelCtx = labelCanvas.getContext('2d');
-        const labelText = tx.amount_btc.toFixed(2) + ' BTC';
-        labelCanvas.width = 256;
-        labelCanvas.height = 48;
-        labelCtx.clearRect(0, 0, 256, 48);
-        labelCtx.font = '600 24px JetBrains Mono, monospace';
-        labelCtx.textAlign = 'center';
-        labelCtx.textBaseline = 'middle';
-        // Shadow
-        labelCtx.fillStyle = 'rgba(0,0,0,0.8)';
-        labelCtx.fillText(labelText, 129, 25);
-        // Text
-        labelCtx.fillStyle = isLarge ? '#ff6b35' : '#00d4ff';
-        labelCtx.fillText(labelText, 128, 24);
-        const labelTex = new THREE.CanvasTexture(labelCanvas);
-        const labelMat = new THREE.SpriteMaterial({
-          map: labelTex,
-          transparent: true,
-          opacity: 0,
-          depthWrite: false,
-          blending: THREE.NormalBlending,
-        });
-        const labelSprite = new THREE.Sprite(labelMat);
-        labelSprite.scale.set(4, 0.75, 1);
-        labelSprite.position.set(sNode.x, sNode.y + 1.2, sNode.z);
-        labelGroup.add(labelSprite);
-
-        activePulses.push({
-          sprite, labelSprite, labelTex,
-          sx: sNode.x, sy: sNode.y, sz: sNode.z,
-          tx: rNode.x, ty: rNode.y, tz: rNode.z,
-          startMs: performance.now(),
-          durationMs: travelMs,
-          color, pulseSize, isLarge,
-          alive: true,
-          edgeKey: eKey,
-          txData: tx,
-        });
-      }
+    // Update edge state
+    let es = edgeState.get(edge.key);
+    if (!es) {
+      es = { txCount: 0, lastTxTime: tx.timestamp };
+      edgeState.set(edge.key, es);
     }
-  }
+    es.txCount++;
+    es.lastTxTime = tx.timestamp;
 
-  function updatePulses() {
-    const now = performance.now();
-    for (const pulse of activePulses) {
-      if (!pulse.alive) continue;
-      const t = Math.min(1, (now - pulse.startMs) / pulse.durationMs);
-      const easedT = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;  // ease in-out
-
-      // Interpolate position
-      pulse.sprite.position.set(
-        pulse.sx + (pulse.tx - pulse.sx) * easedT,
-        pulse.sy + (pulse.ty - pulse.sy) * easedT,
-        pulse.sz + (pulse.tz - pulse.sz) * easedT,
-      );
-
-      // Label follows slightly behind pulse head
-      const labelT = Math.max(0, easedT - 0.05);
-      pulse.labelSprite.position.set(
-        pulse.sx + (pulse.tx - pulse.sx) * labelT,
-        pulse.sy + (pulse.ty - pulse.sy) * labelT + 1.2,
-        pulse.sz + (pulse.tz - pulse.sz) * labelT,
-      );
-
-      // Fade in quickly, hold, then fade out near destination
-      let opacity;
-      if (t < 0.12) opacity = t / 0.12;
-      else if (t < 0.8) opacity = 1;
-      else opacity = (1 - t) / 0.2;
-      pulse.sprite.material.opacity = Math.max(0, opacity) * 0.95;
-
-      // Label: fade in at 20%, hold, fade out at 80%
-      let labelOp;
-      if (t < 0.2) labelOp = 0;
-      else if (t < 0.3) labelOp = (t - 0.2) / 0.1;
-      else if (t < 0.75) labelOp = 0.9;
-      else labelOp = Math.max(0, (1 - t) / 0.25 * 0.9);
-      pulse.labelSprite.material.opacity = labelOp;
-
-      // Pulse size oscillation (breathing)
-      const breathe = 1 + 0.15 * Math.sin(t * Math.PI * 6);
-      pulse.sprite.scale.setScalar(pulse.pulseSize * 2 * breathe);
-
-      if (t >= 1) {
-        pulse.alive = false;
-        // Node flash on arrival
-        const arrivalMesh = nodeMeshMap.get(pulse.txData.receiver);
-        if (arrivalMesh) {
-          arrivalMesh.material.emissiveIntensity = 3.0;
-          setTimeout(() => {
-            if (arrivalMesh.material) arrivalMesh.material.emissiveIntensity = 0.8;
-          }, 400);
-        }
-        // Cleanup
-        pulseGroup.remove(pulse.sprite);
-        pulse.sprite.geometry?.dispose();
-        pulse.sprite.material.map?.dispose();
-        pulse.sprite.material.dispose();
-        labelGroup.remove(pulse.labelSprite);
-        pulse.labelSprite.geometry?.dispose();
-        pulse.labelTex?.dispose();
-        pulse.labelSprite.material.dispose();
-      }
-    }
-    activePulses = activePulses.filter(p => p.alive);
+    return pulse;
   }
 
   function clearPulses() {
-    for (const pulse of activePulses) {
-      pulseGroup.remove(pulse.sprite);
-      pulse.sprite.geometry?.dispose();
-      pulse.sprite.material.map?.dispose();
-      pulse.sprite.material.dispose();
-      labelGroup.remove(pulse.labelSprite);
-      pulse.labelSprite.geometry?.dispose();
-      pulse.labelTex?.dispose();
-      pulse.labelSprite.material.dispose();
+    for (const p of activePulses) {
+      pulseGroup.remove(p.sprite);
+      p.sprite.material.dispose();
+      p.alive = false;
     }
     activePulses = [];
   }
 
-  /* =========== SIMULATION LOOP =========== */
-  function animate(timestamp) {
-    requestAnimationFrame(animate);
+  /* =========== HOVER / TOOLTIP =========== */
+  let hoveredAddr = null;
 
-    if (isPlaying) {
-      const wallDelta = lastFrameTime ? (timestamp - lastFrameTime) : 0;
-      lastFrameTime = timestamp;
-
-      const prevTime = simulationTime;
-      const simDelta = (wallDelta / SIM_HOUR_DURATION) * 3600 * playbackSpeed;
-      simulationTime = Math.min(simulationTime + simDelta, timeEnd);
-
-      if (simulationTime > prevTime) {
-        spawnPulses(prevTime);
-      }
-
-      if (simulationTime >= timeEnd) {
-        isPlaying = false;
-        lastFrameTime = 0;
-        elIconPlay.classList.remove('hidden');
-        elIconPause.classList.add('hidden');
-      }
-    } else {
-      lastFrameTime = 0;
-    }
-
-    updatePulses();
-    updateWires();
-    updateNodes();
-    updateDisplay();
-    controls.update();
-    composer.render();
-  }
-
-  /* =========== HOVER (raycasting) =========== */
   function onMouseMove(event) {
     const rect = container.getBoundingClientRect();
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -943,45 +885,114 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
     const intersects = raycaster.intersectObjects(meshes);
 
     if (intersects.length > 0) {
-      const hit = intersects[0].object;
-      const { addr, node } = hit.userData;
-      const stats = getWalletStatsAtTime(addr, simulationTime);
+      const mesh = intersects[0].object;
+      const { addr } = mesh.userData;
 
-      const shortAddr = addr.length > 20 ? addr.slice(0, 10) + '\u2026' + addr.slice(-8) : addr;
-      elTooltip.innerHTML = `
-        <div class="tt-label">Wallet</div>
-        <div class="tt-amount">${shortAddr}</div>
-        <div class="tt-label">Balance</div>
-        <div class="tt-amount">${stats.balance.toLocaleString(undefined, { maximumFractionDigits: 4 })} BTC</div>
-        <div class="tt-label">Transactions</div>
-        <div class="tt-amount">${stats.txCount}</div>
-      `;
-      const rect2 = container.getBoundingClientRect();
-      elTooltip.style.left = (event.clientX - rect2.left + 12) + 'px';
-      elTooltip.style.top = (event.clientY - rect2.top - 10) + 'px';
-      elTooltip.classList.remove('hidden');
-      container.style.cursor = 'pointer';
+      if (addr !== hoveredAddr) {
+        hoveredAddr = addr;
+        const stats = getWalletStatsAtTime(addr, simulationTime);
+        const short = addr.slice(0, 8) + '...' + addr.slice(-6);
+        elTooltip.innerHTML = `
+          <div><span class="tt-label">Wallet</span> <span class="tt-amount">${short}</span></div>
+          <div><span class="tt-label">Balance</span> <span>${stats.balance.toFixed(2)} BTC</span></div>
+          <div><span class="tt-label">Transactions</span> <span>${stats.txCount}</span></div>
+        `;
+        elTooltip.classList.remove('hidden');
+      }
+
+      elTooltip.style.left = (event.clientX - rect.left + 14) + 'px';
+      elTooltip.style.top = (event.clientY - rect.top - 10) + 'px';
     } else {
+      hoveredAddr = null;
       elTooltip.classList.add('hidden');
-      container.style.cursor = '';
     }
+  }
+
+  /* =========== SIMULATION TICK =========== */
+  let txIndex = 0;
+
+  function tickSimulation(deltaRealMs) {
+    if (!isPlaying || filteredTxns.length === 0) return;
+
+    const deltaSimSec = (deltaRealMs / 1000) * playbackSpeed * (SIM_HOUR_DURATION / 3600000) * 3600;
+    // SIM_HOUR_DURATION ms of real time = 1 sim hour = 3600 sim seconds
+    // Actually: 1 real second = (3600 / SIM_HOUR_DURATION * 1000) sim seconds * playbackSpeed
+    const simSecsPerRealSec = (3600 / SIM_HOUR_DURATION) * 1000 * playbackSpeed;
+    simulationTime += (deltaRealMs / 1000) * simSecsPerRealSec;
+
+    if (simulationTime >= timeEnd) {
+      simulationTime = timeEnd;
+      isPlaying = false;
+      elIconPlay.classList.remove('hidden');
+      elIconPause.classList.add('hidden');
+    }
+
+    // Fire new transactions
+    while (txIndex < filteredTxns.length && filteredTxns[txIndex].timestamp <= simulationTime) {
+      const tx = filteredTxns[txIndex];
+      const eKey = tx.sender < tx.receiver ? `${tx.sender}-${tx.receiver}` : `${tx.receiver}-${tx.sender}`;
+      const edge = edges.find(e => e.key === eKey);
+      if (edge) spawnPulse(tx, edge);
+      txIndex++;
+    }
+  }
+
+  /* =========== ANIMATION LOOP =========== */
+  function animate(timestamp) {
+    requestAnimationFrame(animate);
+
+    const delta = lastFrameTime ? timestamp - lastFrameTime : 0;
+    lastFrameTime = timestamp;
+
+    if (isPlaying) {
+      tickSimulation(delta);
+      updateDisplay();
+    }
+
+    // Animate pulses
+    const now = performance.now();
+    for (const pulse of activePulses) {
+      if (!pulse.alive) continue;
+      const t = Math.min(1, (now - pulse.startTime) / pulse.duration);
+      pulse.sprite.position.set(
+        pulse.sx + (pulse.tx - pulse.sx) * t,
+        pulse.sy + (pulse.ty - pulse.sy) * t,
+        pulse.sz + (pulse.tz - pulse.sz) * t
+      );
+      // Fade out near end
+      const fade = t < 0.8 ? 1 : (1 - t) / 0.2;
+      pulse.sprite.material.opacity = 0.95 * fade;
+      if (t >= 1) {
+        pulse.alive = false;
+        pulseGroup.remove(pulse.sprite);
+        pulse.sprite.material.dispose();
+      }
+    }
+    activePulses = activePulses.filter(p => p.alive);
+
+    // Update dynamic node appearance
+    updateNodes();
+    updateWires();
+
+    controls.update();
+    composer.render();
   }
 
   /* =========== CONTROLS =========== */
   elBtnPlay.addEventListener('click', () => {
-    if (simulationTime >= timeEnd) {
-      simulationTime = timeStart;
-      clearPulses();
-      activatedEdges.clear();
-      recentEdges.clear();
-      edgeState.clear();
-      updateWires();
-    }
+    if (filteredTxns.length === 0) return;
     isPlaying = !isPlaying;
-    lastFrameTime = 0;
     if (isPlaying) {
       elIconPlay.classList.add('hidden');
       elIconPause.classList.remove('hidden');
+      if (simulationTime >= timeEnd) {
+        simulationTime = timeStart;
+        txIndex = 0;
+        clearPulses();
+        activatedEdges.clear();
+        recentEdges.clear();
+        edgeState.clear();
+      }
     } else {
       elIconPlay.classList.remove('hidden');
       elIconPause.classList.add('hidden');
@@ -990,23 +1001,18 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 
   elBtnRewind.addEventListener('click', () => {
     simulationTime = timeStart;
+    txIndex = 0;
     clearPulses();
     activatedEdges.clear();
     recentEdges.clear();
     edgeState.clear();
-    updateWires();
     updateDisplay();
-    isPlaying = false;
-    lastFrameTime = 0;
-    elIconPlay.classList.remove('hidden');
-    elIconPause.classList.add('hidden');
   });
 
   elBtnForward.addEventListener('click', () => {
-    const jump = (timeEnd - timeStart) * 0.1;
-    const prevTime = simulationTime;
-    simulationTime = Math.min(simulationTime + jump, timeEnd);
-    spawnPulses(prevTime);
+    simulationTime = Math.min(simulationTime + 3600, timeEnd);
+    // Catch up txIndex
+    while (txIndex < filteredTxns.length && filteredTxns[txIndex].timestamp <= simulationTime) txIndex++;
     updateDisplay();
   });
 
@@ -1015,74 +1021,109 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   });
 
   elTimeline.addEventListener('input', () => {
-    const prevTime = simulationTime;
-    simulationTime = timeStart + (elTimeline.value / 1000) * (timeEnd - timeStart);
-    if (simulationTime > prevTime) spawnPulses(prevTime);
-    else { clearPulses(); edgeState.clear(); }
+    const progress = elTimeline.value / 1000;
+    simulationTime = timeStart + progress * (timeEnd - timeStart);
+    txIndex = filteredTxns.findIndex(tx => tx.timestamp > simulationTime);
+    if (txIndex === -1) txIndex = filteredTxns.length;
+    updateThumbLabel(progress);
     updateDisplay();
   });
-
-  elFilterMinBtc.addEventListener('change', () => {
-    filterMinBtc = parseFloat(elFilterMinBtc.value) || 1;
-    rebuildVisualization();
-  });
-
-  elFilterMinWallet.addEventListener('change', () => {
-    filterMinWallet = parseFloat(elFilterMinWallet.value) || 0;
-    rebuildVisualization();
-  });
-
-  function rebuildVisualization() {
-    clearPulses();
-    activatedEdges.clear();
-    recentEdges.clear();
-    edgeState.clear();
-    const savedTime = simulationTime;
-    applyFilters();
-    buildGraph();
-    buildWalletTimeline();
-    layoutNodes3D();
-    // Clear and rebuild meshes
-    for (const [, mesh] of nodeMeshMap) { nodeGroup.remove(mesh); mesh.geometry?.dispose(); mesh.material?.dispose(); }
-    nodeMeshMap.clear();
-    for (const [, line] of wireMeshMap) { wireGroup.remove(line); line.geometry?.dispose(); line.material?.dispose(); }
-    wireMeshMap.clear();
-    createNodeMeshes();
-    createWireMeshes();
-    simulationTime = savedTime;
-    initTimeline();
-    updateDisplay();
-  }
 
   // Sound toggle
   elBtnSound.addEventListener('click', () => {
     audioEnabled = !audioEnabled;
-    if (audioEnabled) {
-      elIconSoundOn.classList.remove('hidden');
-      elIconSoundOff.classList.add('hidden');
-    } else {
-      elIconSoundOn.classList.add('hidden');
-      elIconSoundOff.classList.remove('hidden');
-    }
+    elIconSoundOn.classList.toggle('hidden', !audioEnabled);
+    elIconSoundOff.classList.toggle('hidden', audioEnabled);
   });
 
-  /* =========== RESIZE =========== */
+  // Date range controls
+  elBtnLoadRange.addEventListener('click', async () => {
+    if (!useDatabase) return;
+    const startTs = datetimeToUnix(elRangeStart.value);
+    const endTs = datetimeToUnix(elRangeEnd.value);
+    if (!startTs || !endTs || startTs >= endTs) {
+      setRangeStatus('Invalid range');
+      return;
+    }
+    await loadFromDatabase(startTs, endTs);
+  });
+
+  // Refresh button — triggers the cron ingest manually
+  elBtnRefresh.addEventListener('click', async () => {
+    elBtnRefresh.disabled = true;
+    elBtnRefresh.classList.add('refreshing');
+    setRangeStatus('Refreshing\u2026');
+    try {
+      const resp = await fetch('/api/cron/ingest', { method: 'GET', signal: AbortSignal.timeout(125000) });
+      const data = await resp.json();
+      if (data.success || data.message) {
+        const msg = data.message || `Ingested ${data.transactionsInserted} txns`;
+        setRangeStatus(msg);
+        // Reload range info
+        const rangeResp = await fetch('/api/range');
+        if (rangeResp.ok) {
+          const range = await rangeResp.json();
+          dbLatest = range.latest || dbLatest;
+          dbTotalTxns = range.totalTransactions || dbTotalTxns;
+          elRangeEnd.max = unixToLocalDatetime(dbLatest);
+          setRangeStatus(`${dbTotalTxns.toLocaleString()} total transactions available`);
+        }
+      } else {
+        setRangeStatus('Refresh failed: ' + (data.error || 'unknown'));
+      }
+    } catch (e) {
+      setRangeStatus('Refresh error: ' + e.message);
+    }
+    elBtnRefresh.disabled = false;
+    elBtnRefresh.classList.remove('refreshing');
+  });
+
+  // Filters
+  elFilterMinBtc.addEventListener('change', () => {
+    filterMinBtc = parseFloat(elFilterMinBtc.value) || 0;
+    resetScene();
+    applyFilters();
+    buildGraph();
+    buildWalletTimeline();
+    layoutNodes3D();
+    createNodeMeshes();
+    createWireMeshes();
+    txIndex = filteredTxns.findIndex(tx => tx.timestamp > simulationTime);
+    if (txIndex === -1) txIndex = filteredTxns.length;
+  });
+
+  elFilterMinWallet.addEventListener('change', () => {
+    filterMinWallet = parseFloat(elFilterMinWallet.value) || 0;
+    resetScene();
+    applyFilters();
+    buildGraph();
+    buildWalletTimeline();
+    layoutNodes3D();
+    createNodeMeshes();
+    createWireMeshes();
+    txIndex = filteredTxns.findIndex(tx => tx.timestamp > simulationTime);
+    if (txIndex === -1) txIndex = filteredTxns.length;
+  });
+
+  // Resize
   window.addEventListener('resize', () => {
-    const w = container.clientWidth, h = container.clientHeight;
-    camera.aspect = w / h;
+    camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
-    composer.setSize(w, h);
-    const res = new THREE.Vector2(w, h);
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    composer.setSize(container.clientWidth, container.clientHeight);
+    const res = new THREE.Vector2(container.clientWidth, container.clientHeight);
     for (const [, line] of wireMeshMap) {
-      line.material.resolution.set(w, h);
+      line.material.resolution.copy(res);
     }
   });
 
   container.addEventListener('mousemove', onMouseMove);
-  container.addEventListener('mouseleave', () => elTooltip.classList.add('hidden'));
+  container.addEventListener('mouseleave', () => {
+    hoveredAddr = null;
+    elTooltip.classList.add('hidden');
+  });
 
-  /* =========== INIT =========== */
+  /* =========== BOOT =========== */
   initThree();
   loadData().then(() => {
     requestAnimationFrame(animate);
