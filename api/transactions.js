@@ -135,7 +135,7 @@ async function processBlock(height, minAmountSats) {
 export default async function handler(req, res) {
   try {
     const blocksToSample = Math.min(
-      parseInt(req.query.blocks) || 80,
+      parseInt(req.query.blocks) || 30,
       200
     );
     const minBtc = parseFloat(req.query.min_btc) || 1;
@@ -171,10 +171,10 @@ export default async function handler(req, res) {
       allTransactions = allTransactions.slice(0, MAX_TRANSACTIONS);
     }
 
-    // Fetch balances for up to 100 unique senders
+    // Fetch balances for up to 40 unique senders (limit to stay within timeout)
     const uniqueSenders = [
       ...new Set(allTransactions.map((tx) => tx.sender)),
-    ].slice(0, 100);
+    ].slice(0, 40);
     const balanceCache = {};
 
     for (const addr of uniqueSenders) {

@@ -156,6 +156,26 @@
   font-style: italic;
 }
 
+/* ===== LOADING STATUS ===== */
+.loading-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-primary);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 10;
+  opacity: 0.8;
+}
+
+.loading-status:empty {
+  display: none;
+}
+
 /* ===== TOOLTIP ===== */
 .tooltip {
   position: absolute;
