@@ -67,6 +67,18 @@
       </div>
     </header>
 
+    <div id="date-range-bar" class="date-range-bar">
+      <div class="date-range-inner">
+        <label class="date-range-label">Date Range</label>
+        <input type="datetime-local" id="range-start" class="date-input" step="60">
+        <span class="date-range-sep">&rarr;</span>
+        <input type="datetime-local" id="range-end" class="date-input" step="60">
+        <button id="btn-load-range" class="load-range-btn">Load</button>
+        <button id="btn-refresh-data" class="load-range-btn refresh-btn" title="Fetch latest blocks from blockchain">&#x21bb; Refresh</button>
+        <span id="range-status" class="range-status"></span>
+      </div>
+    </div>
+
     <main id="main">
       <div id="three-container"></div>
       <div id="loading-status" class="loading-status"></div>

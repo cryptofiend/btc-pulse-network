@@ -1,10 +1,13 @@
 {
   "name": "btc-pulse-network",
-  "version": "1.0.0",
-  "description": "Real-time 3D Bitcoin transaction visualization with laser sound effects",
+  "version": "2.0.0",
+  "description": "Real-time 3D Bitcoin transaction visualization with Postgres-backed data pipeline",
   "private": true,
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2"
   }
 }
