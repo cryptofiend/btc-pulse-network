@@ -40,8 +40,8 @@
 
 /* ===== LAYOUT ===== */
 #app {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
   overflow: hidden;
 }
@@ -228,6 +228,8 @@
   position: relative;
   overflow: hidden;
   background: var(--color-bg);
+  flex: 1;
+  min-height: 0;
 }
 
 #three-container {
