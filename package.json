@@ -1,0 +1,10 @@
+{
+  "name": "btc-pulse-network",
+  "version": "1.0.0",
+  "description": "Real-time 3D Bitcoin transaction visualization with laser sound effects",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

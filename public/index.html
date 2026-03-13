@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<!--
+   ______                            __
+  / ____/___  ____ ___  ____  __  __/ /____  _____
+ / /   / __ \/ __ `__ \/ __ \/ / / / __/ _ \/ ___/
+/ /___/ /_/ / / / / / / /_/ / /_/ / /_/  __/ /
+\____/\____/_/ /_/ /_/ .___/\__,_/\__/\___/_/
+                    /_/
+        Created with Perplexity Computer
+        https://www.perplexity.ai/computer
+-->
+<meta name="generator" content="Perplexity Computer">
+<meta name="author" content="Perplexity Computer">
+<meta property="og:see_also" content="https://www.perplexity.ai/computer">
+<link rel="author" href="https://www.perplexity.ai/computer">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bitcoin Transaction Pulse Network — 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./base.css">
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.183.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="header-left">
+        <svg class="logo" width="28" height="28" viewBox="0 0 28 28" fill="none" aria-label="Bitcoin Pulse Network">
+          <circle cx="14" cy="14" r="12" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10 8v12M18 8v12M8 11h12M8 17h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <circle cx="14" cy="14" r="3" fill="currentColor" opacity="0.3"/>
+        </svg>
+        <h1>BTC Pulse Network</h1>
+      </div>
+      <div class="header-center">
+        <div class="time-display">
+          <span class="time-label">Simulation Time</span>
+          <span id="current-time" class="time-value">--</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="stats-row">
+          <div class="stat">
+            <span class="stat-label">Visible Txns</span>
+            <span id="stat-txns" class="stat-value">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Total BTC</span>
+            <span id="stat-btc" class="stat-value">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Active Wallets</span>
+            <span id="stat-wallets" class="stat-value">0</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <div id="three-container"></div>
+      <div id="tooltip" class="tooltip hidden"></div>
+      <div id="legend" class="legend">
+        <div class="legend-item">
+          <span class="legend-dot cyan"></span>
+          <span>Transaction &lt;100 BTC</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-dot orange"></span>
+          <span>Transaction &ge;100 BTC</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-size sm"></span>
+          <span>Small pulse = small txn</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-size lg"></span>
+          <span>Large pulse = large txn</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-speed">Slow &rarr; Fast</span>
+          <span>= Confirm time</span>
+        </div>
+        <div class="legend-item legend-hint">
+          <span>Drag to rotate &middot; Scroll to zoom</span>
+        </div>
+      </div>
+    </main>
+
+    <footer id="controls">
+      <div class="controls-row">
+        <div class="transport">
+          <button id="btn-rewind" class="transport-btn" aria-label="Rewind to start" title="Rewind">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="11,19 2,12 11,5"/><polygon points="22,19 13,12 22,5"/></svg>
+          </button>
+          <button id="btn-play" class="transport-btn play-btn" aria-label="Play / Pause" title="Play / Pause">
+            <svg id="icon-play" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+            <svg id="icon-pause" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" class="hidden"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+          </button>
+          <button id="btn-forward" class="transport-btn" aria-label="Skip forward" title="Skip forward">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="13,19 22,12 13,5"/><polygon points="2,19 11,12 2,5"/></svg>
+          </button>
+          <div class="speed-control">
+            <label for="speed-select">Speed</label>
+            <select id="speed-select">
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+              <option value="10">10x</option>
+            </select>
+          </div>
+          <button id="btn-sound" class="transport-btn sound-btn" aria-label="Toggle sound" title="Toggle sound">
+            <svg id="icon-sound-on" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3z"/><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z" fill="currentColor" opacity="0.7"/><path d="M19 12c0 2.97-1.65 5.54-4 6.71v-2.14c1.35-.96 2.25-2.54 2.25-4.57s-.9-3.61-2.25-4.57V5.29c2.35 1.17 4 3.74 4 6.71z" fill="currentColor" opacity="0.4"/></svg>
+            <svg id="icon-sound-off" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" class="hidden"><path d="M3 9v6h4l5 5V4L7 9H3z"/><line x1="17" y1="9" x2="23" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="23" y1="9" x2="17" y2="15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+
+        <div class="timeline-wrapper">
+          <div class="timeline-track-container">
+            <input type="range" id="timeline-slider" min="0" max="1000" value="0" step="1" aria-label="Timeline scrubber">
+            <div id="timeline-thumb-label" class="timeline-thumb-label">--</div>
+          </div>
+          <div class="timeline-labels">
+            <span id="timeline-start">--</span>
+            <span id="timeline-end">--</span>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="filter-group">
+            <label for="filter-min-btc">Min Transaction</label>
+            <div class="filter-input-row">
+              <input type="number" id="filter-min-btc" min="1" value="1" step="1" placeholder="1">
+              <span class="filter-unit">BTC</span>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label for="filter-min-wallet">Min Sender Wallet</label>
+            <div class="filter-input-row">
+              <input type="number" id="filter-min-wallet" min="0" value="0" step="1" placeholder="0">
+              <span class="filter-unit">BTC</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="footer-attr">
+        <a href="https://www.perplexity.ai/computer" target="_blank" rel="noopener noreferrer">Created with Perplexity Computer</a>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
