@@ -336,8 +336,8 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   }
 
   async function loadFromDatabase(startTs, endTs) {
-    showLoadingStatus('Loading transactions from database…');
-    setRangeStatus('Loading…');
+    showLoadingStatus('Loading transactions from database\u2026');
+    setRangeStatus('Loading\u2026');
     elBtnLoadRange.disabled = true;
     try {
       const url = `/api/transactions?start=${startTs}&end=${endTs}&min_btc=1`;
@@ -399,7 +399,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 
     // Fallback: load static JSON
     useDatabase = false;
-    showLoadingStatus('Loading transaction data…');
+    showLoadingStatus('Loading transaction data\u2026');
     const staticResp = await fetch('./transactions.json');
     const staticData = await staticResp.json();
     console.log(`Loaded ${staticData.length} transactions from static file (database unavailable)`);
@@ -711,7 +711,12 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
     elThumbLabel.textContent = formatDateTime(d);
     const sliderRect = elTimeline.getBoundingClientRect();
     const thumbR = 7, usable = sliderRect.width - thumbR * 2;
-    elThumbLabel.style.left = (thumbR + progress * usable) + 'px';
+    const rawLeft = thumbR + progress * usable;
+    // Clamp so the label (centered via translateX(-50%)) stays within bounds
+    const labelW = elThumbLabel.offsetWidth || 0;
+    const minLeft = labelW / 2;
+    const maxLeft = sliderRect.width - labelW / 2;
+    elThumbLabel.style.left = Math.max(minLeft, Math.min(maxLeft, rawLeft)) + 'px';
   }
   function formatDate(d) {
     const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -789,273 +794,458 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
       line.material.linewidth = width;
 
       if (hasActivePulse) {
-        // Wire glows cyan during active pulse
-        line.material.color.copy(WIRE_GLOW);
+        // Active pulse on this wire — full glow
+        line.material.color.set(WIRE_GLOW.getHex());
         line.material.opacity = WIRE_BRIGHT_OPACITY;
+      } else if (age < WIRE_FADE_SEC) {
+        // Fading: linear from WIRE_BRIGHT_OPACITY to 0 over WIRE_FADE_SEC
+        const fade = WIRE_BRIGHT_OPACITY * (1 - age / WIRE_FADE_SEC);
+        line.material.color.set(WIRE_COLOR.getHex());
+        line.material.opacity = Math.max(fade, 0);
       } else {
-        // Fade the wire over WIRE_FADE_SEC after last transaction
-        const fadeT = Math.max(0, 1 - age / WIRE_FADE_SEC);
-        const baseOpacity = 0.08 + 0.32 * fadeT; // fades from 0.40 to 0.08
-        line.material.color.copy(WIRE_COLOR);
-        line.material.opacity = baseOpacity;
+        // Fully faded — 1 day since last tx
+        line.material.opacity = 0;
       }
     }
   }
 
   /* =========== PULSE SYSTEM =========== */
-  function spawnPulse(tx, edge) {
-    const geo = new THREE.SphereGeometry(0.25, 8, 6);
-    const mat = new THREE.MeshStandardMaterial({
-      color: ORANGE,
-      emissive: ORANGE,
-      emissiveIntensity: 1.2,
-      transparent: true,
-      opacity: 1,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    pulseGroup.add(mesh);
-
-    const confNorm = Math.min(1, Math.max(0.1, tx.confirmation_time_min / 60));
-    playLaserSound(tx.amount_btc, confNorm);
-
-    const size = 0.15 + Math.log10(Math.max(tx.amount_btc, 1)) * 0.15;
-    const duration = PULSE_DURATION_BASE * (0.5 + confNorm * 0.5);
-
-    activePulses.push({
-      mesh, alive: true,
-      sx: edge.sx, sy: edge.sy, sz: edge.sz,
-      tx: edge.tx, ty: edge.ty, tz: edge.tz,
-      startTime: performance.now(),
-      duration,
-      size,
-      edgeKey: edge.key,
-    });
+  // Create a radial gradient texture for round sprites
+  function createGlowTexture() {
+    const size = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+    gradient.addColorStop(0, 'rgba(255,255,255,1)');
+    gradient.addColorStop(0.3, 'rgba(255,255,255,0.8)');
+    gradient.addColorStop(0.6, 'rgba(255,255,255,0.3)');
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(canvas);
+    return tex;
   }
+  const glowTexture = createGlowTexture();
 
-  function updatePulses(nowMs) {
-    for (const p of activePulses) {
-      if (!p.alive) continue;
-      const t = (nowMs - p.startTime) / p.duration;
-      if (t >= 1) {
-        p.alive = false;
-        pulseGroup.remove(p.mesh);
-        p.mesh.geometry.dispose();
-        p.mesh.material.dispose();
-        continue;
-      }
-      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-      p.mesh.position.set(
-        p.sx + (p.tx - p.sx) * ease,
-        p.sy + (p.ty - p.sy) * ease,
-        p.sz + (p.tz - p.sz) * ease
-      );
-      const scale = p.size * (1 - 0.3 * Math.sin(t * Math.PI));
-      p.mesh.scale.setScalar(scale);
-      p.mesh.material.opacity = 1 - t * 0.5;
-    }
-    activePulses = activePulses.filter(p => p.alive);
-  }
-
-  function clearPulses() {
-    for (const p of activePulses) {
-      pulseGroup.remove(p.mesh);
-      p.mesh.geometry.dispose();
-      p.mesh.material.dispose();
-    }
-    activePulses = [];
-  }
-
-  /* =========== SIMULATION TICK =========== */
-  function tickSimulation(nowMs) {
-    if (!isPlaying) return;
-    if (lastFrameTime === 0) { lastFrameTime = nowMs; return; }
-    const dt = nowMs - lastFrameTime;
-    lastFrameTime = nowMs;
-
-    // Advance simulation time
-    const simDtSec = (dt / SIM_HOUR_DURATION) * 3600 * playbackSpeed;
-    simulationTime += simDtSec;
-    if (simulationTime >= timeEnd) {
-      simulationTime = timeEnd;
-      isPlaying = false;
-      elIconPlay.classList.remove('hidden');
-      elIconPause.classList.add('hidden');
-      lastFrameTime = 0;
-    }
-
-    // Find transactions that fall in [prevTime, simulationTime]
-    const prevTime = simulationTime - simDtSec;
+  function spawnPulses(prevTime) {
     for (const tx of filteredTxns) {
       if (tx.timestamp > prevTime && tx.timestamp <= simulationTime) {
-        // Find matching edge
-        const eKey = tx.sender < tx.receiver ? `${tx.sender}-${tx.receiver}` : `${tx.receiver}-${tx.sender}`;
-        const edge = edges.find(e => e.key === eKey);
-        if (!edge) continue;
+        const sNode = nodes.get(tx.sender);
+        const rNode = nodes.get(tx.receiver);
+        if (!sNode || !rNode) continue;
 
-        // Update edge state
-        if (!edgeState.has(eKey)) edgeState.set(eKey, { txCount: 0, lastTxTime: 0 });
+        const confNorm = Math.max(0.1, Math.min(1, tx.confirmation_time_min / 120));
+        const travelMs = PULSE_DURATION_BASE * (0.5 + confNorm * 1.5);
+        const amountLog = Math.log10(Math.max(tx.amount_btc, 1));
+        const pulseSize = 0.15 + amountLog * 0.25;
+        const isLarge = tx.amount_btc >= 100;
+        const color = isLarge ? ORANGE : CYAN;
+
+        const eKey = tx.sender < tx.receiver ? `${tx.sender}-${tx.receiver}` : `${tx.receiver}-${tx.sender}`;
+        activatedEdges.add(eKey);
+        recentEdges.set(eKey, simulationTime);
+
+        // Update persistent edge state
+        if (!edgeState.has(eKey)) {
+          edgeState.set(eKey, { txCount: 0, lastTxTime: 0 });
+        }
         const es = edgeState.get(eKey);
         es.txCount++;
-        es.lastTxTime = tx.timestamp;
+        es.lastTxTime = simulationTime;
 
-        activatedEdges.add(eKey);
-        spawnPulse(tx, edge);
+        // Play laser sound
+        playLaserSound(tx.amount_btc, confNorm);
+
+        // Create sprite for pulse head
+        const mat = new THREE.SpriteMaterial({
+          map: glowTexture,
+          color: color.clone(),
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const sprite = new THREE.Sprite(mat);
+        sprite.scale.setScalar(pulseSize * 2);
+        sprite.position.set(sNode.x, sNode.y, sNode.z);
+        pulseGroup.add(sprite);
+
+        // Create label sprite
+        const labelCanvas = document.createElement('canvas');
+        const labelCtx = labelCanvas.getContext('2d');
+        const labelText = tx.amount_btc.toFixed(2) + ' BTC';
+        labelCanvas.width = 256;
+        labelCanvas.height = 48;
+        labelCtx.clearRect(0, 0, 256, 48);
+        labelCtx.font = '600 24px JetBrains Mono, monospace';
+        labelCtx.textAlign = 'center';
+        labelCtx.textBaseline = 'middle';
+        // Shadow
+        labelCtx.fillStyle = 'rgba(0,0,0,0.8)';
+        labelCtx.fillText(labelText, 129, 25);
+        // Text
+        labelCtx.fillStyle = isLarge ? '#ff6b35' : '#00d4ff';
+        labelCtx.fillText(labelText, 128, 24);
+
+        const labelTex = new THREE.CanvasTexture(labelCanvas);
+        labelTex.minFilter = THREE.LinearFilter;
+        const labelMat = new THREE.SpriteMaterial({
+          map: labelTex,
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+        });
+        const labelSprite = new THREE.Sprite(labelMat);
+        labelSprite.scale.set(4, 0.75, 1);
+        labelSprite.position.set(sNode.x, sNode.y + pulseSize * 4 + 0.5, sNode.z);
+        pulseGroup.add(labelSprite);
+
+        activePulses.push({
+          sx: sNode.x, sy: sNode.y, sz: sNode.z,
+          dx: rNode.x, dy: rNode.y, dz: rNode.z,
+          startTime: performance.now(),
+          duration: travelMs,
+          size: pulseSize,
+          amount: tx.amount_btc,
+          isLarge,
+          sender: tx.sender,
+          receiver: tx.receiver,
+          confirmMin: tx.confirmation_time_min,
+          senderBalance: tx.sender_balance,
+          edgeKey: eKey,
+          progress: 0,
+          alive: true,
+          sprite,
+          labelSprite,
+          impactTime: 0,
+          impactMesh: null,
+        });
       }
     }
-
-    updateDisplay();
   }
 
-  /* =========== HOVER / TOOLTIP =========== */
+  function updatePulses(now) {
+    for (const pulse of activePulses) {
+      if (!pulse.alive && pulse.impactMesh) {
+        // Impact flash animation
+        const age = now - pulse.impactTime;
+        if (age > 600) {
+          // Remove impact
+          pulseGroup.remove(pulse.impactMesh);
+          pulse.impactMesh.material.dispose();
+          pulse.impactMesh = null;
+          continue;
+        }
+        const t = age / 600;
+        pulse.impactMesh.scale.setScalar(pulse.size * 3 + t * 5);
+        pulse.impactMesh.material.opacity = (1 - t) * 0.6;
+        continue;
+      }
+
+      if (!pulse.alive) continue;
+
+      const elapsed = now - pulse.startTime;
+      const progress = Math.min(elapsed / pulse.duration, 1);
+      pulse.progress = progress;
+
+      if (progress >= 1) {
+        pulse.alive = false;
+        pulse.impactTime = now;
+
+        // Remove pulse sprite and label
+        pulseGroup.remove(pulse.sprite);
+        pulseGroup.remove(pulse.labelSprite);
+        pulse.sprite.material.dispose();
+        pulse.labelSprite.material.map.dispose();
+        pulse.labelSprite.material.dispose();
+
+        // Create impact flash
+        const impactMat = new THREE.SpriteMaterial({
+          map: glowTexture,
+          color: pulse.isLarge ? ORANGE.clone() : CYAN.clone(),
+          transparent: true,
+          opacity: 0.6,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const impactSprite = new THREE.Sprite(impactMat);
+        impactSprite.position.set(pulse.dx, pulse.dy, pulse.dz);
+        impactSprite.scale.setScalar(pulse.size * 3);
+        pulseGroup.add(impactSprite);
+        pulse.impactMesh = impactSprite;
+        continue;
+      }
+
+      // Move pulse along wire
+      const px = pulse.sx + (pulse.dx - pulse.sx) * progress;
+      const py = pulse.sy + (pulse.dy - pulse.sy) * progress;
+      const pz = pulse.sz + (pulse.dz - pulse.sz) * progress;
+      pulse.sprite.position.set(px, py, pz);
+
+      // Fade as it travels
+      const alpha = 0.95 * (1 - progress * 0.4);
+      pulse.sprite.material.opacity = alpha;
+
+      // Scale pulsing
+      const pulseScale = pulse.size * 2 * (1 + 0.2 * Math.sin(progress * Math.PI * 4));
+      pulse.sprite.scale.setScalar(pulseScale);
+
+      // Label follows above
+      pulse.labelSprite.position.set(px, py + pulse.size * 4 + 0.5, pz);
+      pulse.labelSprite.material.opacity = alpha;
+    }
+
+    // Clean up dead pulses
+    if (activePulses.length > 300) {
+      activePulses = activePulses.filter(p => p.alive || p.impactMesh);
+    }
+  }
+
+  /* =========== RAYCASTING / TOOLTIP =========== */
   function onMouseMove(e) {
     const rect = container.getBoundingClientRect();
     mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
     raycaster.setFromCamera(mouse, camera);
-    const meshes = Array.from(nodeMeshMap.values());
-    const hits = raycaster.intersectObjects(meshes, false);
 
-    if (hits.length > 0) {
-      const hit = hits[0];
-      const { addr, node } = hit.object.userData;
-      const stats = getWalletStatsAtTime(addr, simulationTime);
-      const shortAddr = addr.slice(0, 6) + '…' + addr.slice(-4);
-      elTooltip.style.display = 'block';
-      elTooltip.style.left = (e.clientX - rect.left + 14) + 'px';
-      elTooltip.style.top = (e.clientY - rect.top - 10) + 'px';
+    // Check nodes
+    const nodeIntersects = raycaster.intersectObjects(nodeGroup.children, false);
+    if (nodeIntersects.length > 0) {
+      const hit = nodeIntersects[0].object;
+      const addr = hit.userData.addr;
+      const shortAddr = addr.length > 16 ? addr.slice(0, 8) + '...' + addr.slice(-6) : addr;
+      const liveStats = getWalletStatsAtTime(addr, simulationTime);
       elTooltip.innerHTML = `
-        <div class="font-mono text-xs text-cyan-300">${shortAddr}</div>
-        <div class="text-xs mt-1">Balance: <span class="text-orange-400">${stats.balance.toFixed(2)} BTC</span></div>
-        <div class="text-xs">Txns: <span class="text-cyan-400">${stats.txCount}</span></div>
+        <div><span class="tt-label">Wallet:</span> ${shortAddr}</div>
+        <div><span class="tt-label">Balance:</span> <span class="tt-amount">${liveStats.balance.toLocaleString(undefined, {maximumFractionDigits: 2})} BTC</span></div>
+        <div><span class="tt-label">Transactions:</span> ${liveStats.txCount}</div>
       `;
-    } else {
-      elTooltip.style.display = 'none';
+      showTooltip(e.clientX, e.clientY);
+      return;
     }
+
+    // Check pulses
+    const pulseIntersects = raycaster.intersectObjects(
+      activePulses.filter(p => p.alive).map(p => p.sprite),
+      false
+    );
+    if (pulseIntersects.length > 0) {
+      const hitSprite = pulseIntersects[0].object;
+      const pulse = activePulses.find(p => p.sprite === hitSprite);
+      if (pulse) {
+        const ss = pulse.sender.length > 16 ? pulse.sender.slice(0, 8) + '...' : pulse.sender;
+        const sr = pulse.receiver.length > 16 ? pulse.receiver.slice(0, 8) + '...' : pulse.receiver;
+        elTooltip.innerHTML = `
+          <div><span class="tt-label">Amount:</span> <span class="tt-amount">${pulse.amount.toLocaleString()} BTC</span></div>
+          <div><span class="tt-label">From:</span> ${ss}</div>
+          <div><span class="tt-label">To:</span> ${sr}</div>
+          <div><span class="tt-label">Confirm:</span> ${pulse.confirmMin.toFixed(0)} min</div>
+          <div><span class="tt-label">Sender Bal:</span> ${pulse.senderBalance.toLocaleString()} BTC</div>
+        `;
+        showTooltip(e.clientX, e.clientY);
+        return;
+      }
+    }
+
+    elTooltip.classList.add('hidden');
+  }
+
+  function showTooltip(cx, cy) {
+    elTooltip.classList.remove('hidden');
+    const mainRect = document.getElementById('main').getBoundingClientRect();
+    const ttRect = elTooltip.getBoundingClientRect();
+    let tx = cx - mainRect.left + 14;
+    let ty = cy - mainRect.top - 10;
+    if (tx + ttRect.width > mainRect.width - 10) tx = cx - mainRect.left - ttRect.width - 14;
+    if (ty + ttRect.height > mainRect.height - 10) ty = cy - mainRect.top - ttRect.height - 10;
+    if (ty < 4) ty = 4;
+    elTooltip.style.left = tx + 'px';
+    elTooltip.style.top = ty + 'px';
   }
 
   /* =========== CONTROLS =========== */
-  function setupControls() {
-    elBtnPlay.addEventListener('click', () => {
-      if (simulationTime >= timeEnd) {
-        simulationTime = timeStart;
-        clearPulses();
-        activatedEdges.clear();
-        recentEdges.clear();
-        edgeState.clear();
-      }
-      isPlaying = !isPlaying;
-      lastFrameTime = 0;
-      elIconPlay.classList.toggle('hidden', isPlaying);
-      elIconPause.classList.toggle('hidden', !isPlaying);
-    });
-
-    elBtnRewind.addEventListener('click', () => {
-      simulationTime = Math.max(timeStart, simulationTime - 3600);
-      clearPulses();
-      activatedEdges.clear();
-      recentEdges.clear();
-      edgeState.clear();
-      updateDisplay();
-    });
-
-    elBtnForward.addEventListener('click', () => {
-      simulationTime = Math.min(timeEnd, simulationTime + 3600);
-      updateDisplay();
-    });
-
-    elSpeedSelect.addEventListener('change', () => {
-      playbackSpeed = parseFloat(elSpeedSelect.value);
-    });
-
-    elTimeline.addEventListener('input', () => {
-      const progress = elTimeline.value / 1000;
-      simulationTime = timeStart + progress * (timeEnd - timeStart);
-      clearPulses();
-      activatedEdges.clear();
-      recentEdges.clear();
-      edgeState.clear();
-      updateDisplay();
-    });
-
-    elFilterMinBtc.addEventListener('change', () => {
-      filterMinBtc = parseFloat(elFilterMinBtc.value) || 0;
-      applyFilters();
-      resetScene();
-      buildGraph();
-      buildWalletTimeline();
-      layoutNodes3D();
-      createNodeMeshes();
-      createWireMeshes();
-      initTimeline();
-      updateDisplay();
-    });
-
-    elFilterMinWallet.addEventListener('change', () => {
-      filterMinWallet = parseFloat(elFilterMinWallet.value) || 0;
-      applyFilters();
-      resetScene();
-      buildGraph();
-      buildWalletTimeline();
-      layoutNodes3D();
-      createNodeMeshes();
-      createWireMeshes();
-      initTimeline();
-      updateDisplay();
-    });
-
-    elBtnLoadRange.addEventListener('click', async () => {
-      const startTs = datetimeToUnix(elRangeStart.value);
-      const endTs = datetimeToUnix(elRangeEnd.value);
-      if (!startTs || !endTs || startTs >= endTs) {
-        setRangeStatus('Invalid date range');
-        return;
-      }
-      await loadFromDatabase(startTs, endTs);
-    });
-
-    if (elBtnRefresh) {
-      elBtnRefresh.addEventListener('click', async () => {
-        await loadData();
-      });
-    }
-
-    if (elBtnSound) {
-      elBtnSound.addEventListener('click', () => {
-        audioEnabled = !audioEnabled;
-        elIconSoundOn.classList.toggle('hidden', !audioEnabled);
-        elIconSoundOff.classList.toggle('hidden', audioEnabled);
-      });
-    }
-
-    container.addEventListener('mousemove', onMouseMove);
-    container.addEventListener('mouseleave', () => { elTooltip.style.display = 'none'; });
-
-    window.addEventListener('resize', () => {
-      camera.aspect = container.clientWidth / container.clientHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
-      composer.setSize(container.clientWidth, container.clientHeight);
-      for (const [, line] of wireMeshMap) {
-        line.material.resolution.set(container.clientWidth, container.clientHeight);
-      }
-    });
+  function togglePlay(forceState) {
+    isPlaying = forceState !== undefined ? forceState : !isPlaying;
+    elIconPlay.classList.toggle('hidden', isPlaying);
+    elIconPause.classList.toggle('hidden', !isPlaying);
+    lastFrameTime = 0;
   }
 
-  /* =========== RENDER LOOP =========== */
-  function animate() {
-    const nowMs = performance.now();
-    tickSimulation(nowMs);
-    updatePulses(nowMs);
+  function rewind() {
+    simulationTime = timeStart;
+    clearPulses();
+    activatedEdges.clear();
+    recentEdges.clear();
+    edgeState.clear();
+    updateDisplay();
+  }
+
+  function skipForward() {
+    simulationTime = Math.min(simulationTime + 3600, timeEnd);
+    updateDisplay();
+  }
+
+  function clearPulses() {
+    for (const p of activePulses) {
+      if (p.sprite && p.sprite.parent) pulseGroup.remove(p.sprite);
+      if (p.labelSprite && p.labelSprite.parent) pulseGroup.remove(p.labelSprite);
+      if (p.impactMesh && p.impactMesh.parent) pulseGroup.remove(p.impactMesh);
+    }
+    activePulses = [];
+  }
+
+  function onFilterChange() {
+    filterMinBtc = Math.max(1, parseInt(elFilterMinBtc.value) || 1);
+    filterMinWallet = Math.max(0, parseInt(elFilterMinWallet.value) || 0);
+    applyFilters();
+    buildGraph();
+    buildWalletTimeline();
+    layoutNodes3D();
+    createNodeMeshes();
+    createWireMeshes();
+    clearPulses();
+    activatedEdges.clear();
+    recentEdges.clear();
+    edgeState.clear();
+    updateDisplay();
+  }
+
+  /* =========== ANIMATION LOOP =========== */
+  function animate(now) {
+    requestAnimationFrame(animate);
+
+    if (!lastFrameTime) lastFrameTime = now;
+    const dt = now - lastFrameTime;
+    lastFrameTime = now;
+
+    if (isPlaying) {
+      const prevTime = simulationTime;
+      const simDelta = (dt / SIM_HOUR_DURATION) * 3600 * playbackSpeed;
+      simulationTime = Math.min(simulationTime + simDelta, timeEnd);
+      spawnPulses(prevTime);
+      updateDisplay();
+      if (simulationTime >= timeEnd) togglePlay(false);
+    }
+
     updateNodes();
     updateWires();
+    updatePulses(now);
     controls.update();
     composer.render();
   }
 
+  /* =========== RESIZE =========== */
+  function onResize() {
+    const w = container.clientWidth, h = container.clientHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+    composer.setSize(w, h);
+    // Update LineMaterial resolutions
+    const res = new THREE.Vector2(w, h);
+    for (const [, line] of wireMeshMap) {
+      line.material.resolution.copy(res);
+    }
+  }
+
+  /* =========== EVENT LISTENERS =========== */
+  elBtnPlay.addEventListener('click', () => togglePlay());
+  elBtnRewind.addEventListener('click', rewind);
+  elBtnForward.addEventListener('click', skipForward);
+  elSpeedSelect.addEventListener('change', () => { playbackSpeed = parseFloat(elSpeedSelect.value); });
+  elTimeline.addEventListener('input', () => {
+    const progress = parseInt(elTimeline.value) / 1000;
+    const newTime = timeStart + progress * (timeEnd - timeStart);
+    // If scrubbing backward, reset edge state (accumulated counts would be wrong)
+    if (newTime < simulationTime) {
+      edgeState.clear();
+      activatedEdges.clear();
+      recentEdges.clear();
+    }
+    simulationTime = newTime;
+    clearPulses();
+    updateDisplay();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    if (e.code === 'ArrowLeft') {
+      simulationTime = Math.max(simulationTime - 3600, timeStart);
+      edgeState.clear(); activatedEdges.clear(); recentEdges.clear();
+      clearPulses(); updateDisplay();
+    }
+    if (e.code === 'ArrowRight') { skipForward(); }
+  });
+  elBtnSound.addEventListener('click', () => {
+    audioEnabled = !audioEnabled;
+    elIconSoundOn.classList.toggle('hidden', !audioEnabled);
+    elIconSoundOff.classList.toggle('hidden', audioEnabled);
+  });
+  // Initialize AudioContext on first play click (browser autoplay policy)
+  elBtnPlay.addEventListener('click', () => { if (audioEnabled) ensureAudioCtx(); }, { once: true });
+  // Date range loader
+  elBtnLoadRange.addEventListener('click', async () => {
+    const startStr = elRangeStart.value;
+    const endStr = elRangeEnd.value;
+    if (!startStr || !endStr) { setRangeStatus('Select both dates'); return; }
+    const startTs = datetimeToUnix(startStr);
+    const endTs = datetimeToUnix(endStr);
+    if (startTs >= endTs) { setRangeStatus('Start must be before end'); return; }
+    if (useDatabase) {
+      await loadFromDatabase(startTs, endTs);
+    } else {
+      // Filter the static data to the selected range
+      const staticResp = await fetch('./transactions.json');
+      const allData = await staticResp.json();
+      const filtered = allData.filter(tx => tx.timestamp >= startTs && tx.timestamp <= endTs);
+      if (filtered.length === 0) { setRangeStatus('No data in range'); return; }
+      resetScene();
+      initWithData(filtered);
+      setRangeStatus(`${filtered.length} transactions loaded`);
+    }
+  });
+  // Refresh button — triggers ingestion of latest blocks
+  elBtnRefresh.addEventListener('click', async () => {
+    if (!useDatabase) { setRangeStatus('Database not connected'); return; }
+    elBtnRefresh.disabled = true;
+    elBtnRefresh.classList.add('refreshing');
+    setRangeStatus('Fetching latest blocks\u2026');
+    try {
+      const resp = await fetch('/api/cron/ingest', { signal: AbortSignal.timeout(120000) });
+      const result = await resp.json();
+      if (result.success) {
+        setRangeStatus(`+${result.transactionsInserted} new txns ingested`);
+        // Update range bounds
+        const rangeResp = await fetch('/api/range', { signal: AbortSignal.timeout(10000) });
+        if (rangeResp.ok) {
+          const range = await rangeResp.json();
+          if (range.latest) {
+            dbLatest = range.latest;
+            dbTotalTxns = range.totalTransactions;
+            elRangeEnd.max = unixToLocalDatetime(dbLatest);
+            elRangeEnd.value = unixToLocalDatetime(dbLatest);
+          }
+        }
+      } else {
+        setRangeStatus(result.message || result.error || 'Refresh failed');
+      }
+    } catch (e) {
+      setRangeStatus('Refresh failed: ' + e.message);
+    }
+    elBtnRefresh.disabled = false;
+    elBtnRefresh.classList.remove('refreshing');
+  });
+  elFilterMinBtc.addEventListener('change', onFilterChange);
+  elFilterMinWallet.addEventListener('change', onFilterChange);
+  window.addEventListener('resize', onResize);
+  container.addEventListener('mousemove', onMouseMove);
+  container.addEventListener('mouseleave', () => elTooltip.classList.add('hidden'));
+
   /* =========== INIT =========== */
   initThree();
-  setupControls();
   loadData().then(() => {
     requestAnimationFrame(animate);
   });
