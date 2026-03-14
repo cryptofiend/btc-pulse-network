@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "description": "Real-time 3D Bitcoin transaction visualization with Postgres-backed data pipeline",
   "private": true,
+  "type": "module",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
@@ -11,3 +12,4 @@
     "@neondatabase/serverless": "^1.0.2"
   }
 }
+
