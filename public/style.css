@@ -572,3 +572,200 @@
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+/* ===== MOBILE RESPONSIVE ===== */
+@media (max-width: 767px) {
+  /* -- Header: stack into rows -- */
+  #header {
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    min-height: unset;
+  }
+
+  .header-left {
+    flex-shrink: 0;
+  }
+
+  .logo {
+    width: 22px;
+    height: 22px;
+  }
+
+  #header h1 {
+    font-size: 0.5625rem;
+  }
+
+  .header-center {
+    order: 3;
+    flex-basis: 100%;
+    display: flex;
+    justify-content: center;
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--color-border);
+  }
+
+  .time-display {
+    flex-direction: row;
+    gap: var(--space-2);
+    align-items: baseline;
+  }
+
+  .time-label {
+    font-size: 0.5625rem;
+  }
+
+  .time-value {
+    font-size: var(--text-xs);
+  }
+
+  .header-right {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .stats-row {
+    gap: var(--space-2);
+    justify-content: flex-end;
+  }
+
+  .stat {
+    align-items: center;
+  }
+
+  .stat-label {
+    font-size: 0.5rem;
+    letter-spacing: 0.02em;
+  }
+
+  .stat-value {
+    font-size: 0.625rem;
+  }
+
+  /* -- Date range bar: wrap onto two lines -- */
+  .date-range-bar {
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .date-range-inner {
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .date-range-label {
+    flex-basis: 100%;
+    margin-bottom: -2px;
+  }
+
+  .date-input {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.625rem;
+    padding: 4px 6px;
+  }
+
+  .date-range-sep {
+    flex-shrink: 0;
+  }
+
+  .load-range-btn {
+    padding: 4px 10px;
+    font-size: 0.5625rem;
+  }
+
+  .range-status {
+    font-size: 0.5625rem;
+    flex-basis: 100%;
+  }
+
+  /* -- Legend: smaller, compact -- */
+  .legend {
+    bottom: var(--space-2);
+    left: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    font-size: 0.5625rem;
+    max-width: 160px;
+    gap: 3px;
+  }
+
+  .legend-hint {
+    display: none;
+  }
+
+  .legend-speed {
+    font-size: 0.5625rem;
+  }
+
+  /* -- Controls footer: stack vertically -- */
+  #controls {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .controls-row {
+    flex-direction: column;
+    gap: var(--space-2);
+    align-items: stretch;
+  }
+
+  /* Transport row: centered, compact */
+  .transport {
+    justify-content: center;
+    gap: var(--space-1);
+  }
+
+  .transport-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .play-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  .speed-control select {
+    padding: 2px 4px;
+  }
+
+  /* Timeline: full width */
+  .timeline-wrapper {
+    width: 100%;
+  }
+
+  .timeline-thumb-label {
+    font-size: 0.5625rem;
+    top: -18px;
+    /* Prevent clipping at edges */
+    left: clamp(30px, var(--thumb-pos, 0%), calc(100% - 30px));
+  }
+
+  /* Filters: side-by-side, compact */
+  .filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-2);
+  }
+
+  .filter-group label {
+    font-size: 0.5625rem;
+  }
+
+  .filter-input-row input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .filter-input-row {
+    flex: 1;
+  }
+
+  /* Footer attribution */
+  .footer-attr {
+    padding-top: 2px;
+  }
+
+  .footer-attr a {
+    font-size: 0.5625rem;
+  }
+}
+
