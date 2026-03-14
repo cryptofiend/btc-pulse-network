@@ -72,8 +72,8 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   function playLaserSound(amountBtc, confNorm) {
     if (!audioEnabled) return;
     if (activeSoundCount >= MAX_CONCURRENT_SOUNDS) return;
-    const ctx = ensureAudioCtx();
-    if (!ctx) return;
+    if (!audioCtx || audioCtx.state !== 'running') return;
+    const ctx = audioCtx;
 
     activeSoundCount++;
 
@@ -1183,9 +1183,14 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
     audioEnabled = !audioEnabled;
     elIconSoundOn.classList.toggle('hidden', !audioEnabled);
     elIconSoundOff.classList.toggle('hidden', audioEnabled);
+    // Resume AudioContext on sound toggle (user gesture required on mobile)
+    if (audioEnabled) ensureAudioCtx();
   });
-  // Initialize AudioContext on first play click (browser autoplay policy)
-  elBtnPlay.addEventListener('click', () => { if (audioEnabled) ensureAudioCtx(); }, { once: true });
+  // Resume AudioContext on every play click (mobile browsers suspend aggressively)
+  elBtnPlay.addEventListener('click', () => { if (audioEnabled) ensureAudioCtx(); });
+  // Mobile: resume AudioContext on first touch anywhere (covers iOS Safari autoplay policy)
+  document.addEventListener('touchstart', () => { if (audioEnabled) ensureAudioCtx(); }, { once: true });
+  document.addEventListener('click', () => { if (audioEnabled) ensureAudioCtx(); }, { once: true });
   // Date range loader
   elBtnLoadRange.addEventListener('click', async () => {
     const startStr = elRangeStart.value;
