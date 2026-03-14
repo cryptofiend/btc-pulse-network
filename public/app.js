@@ -54,12 +54,38 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
   const MAX_CONCURRENT_SOUNDS = 8;
   let activeSoundCount = 0;
 
+  // --- iOS silent-switch bypass ---
+  // 1) AudioSession API (Safari 17.4+): tells iOS this is media playback, not ringer audio
+  if ('audioSession' in navigator) {
+    navigator.audioSession.type = 'playback';
+  }
+  // 2) Silent <audio> element fallback: playing an HTML audio element forces iOS
+  //    to route ALL audio (including Web Audio API) through the media channel,
+  //    which is not affected by the ringer/silent switch.
+  let silentAudioEl = null;
+  function ensureSilentAudio() {
+    if (silentAudioEl) return;
+    // Generate a tiny silent WAV in a data URI (44 bytes of PCM silence, ~0.01s)
+    // This avoids needing an external file.
+    silentAudioEl = document.createElement('audio');
+    silentAudioEl.setAttribute('x-webkit-airplay', 'deny'); // hide from AirPlay
+    silentAudioEl.loop = true;
+    silentAudioEl.volume = 0.01; // near-silent but non-zero so iOS doesn't optimize it away
+    silentAudioEl.src = './silence.wav'; // tiny 1.6 KB silent WAV file
+    silentAudioEl.play().catch(() => {}); // may fail if not in gesture — that's okay
+  }
+
   function ensureAudioCtx() {
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (audioCtx.state === 'suspended') {
       audioCtx.resume();
+    }
+    // Kick the silent audio element (must be done inside user gesture)
+    ensureSilentAudio();
+    if (silentAudioEl && silentAudioEl.paused) {
+      silentAudioEl.play().catch(() => {});
     }
     return audioCtx;
   }
